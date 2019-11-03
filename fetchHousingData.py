@@ -4,13 +4,21 @@ from six.moves import urllib
 import pandas as pd
 import sys
 import numpy as np
+import time
 import matplotlib.pyplot as plt
 from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.preprocessing import Imputer, OneHotEncoder, LabelEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import mean_squared_error
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.model_selection import cross_val_score
+from sklearn.ensemble import RandomForestRegressor
+
+from scipy import sparse
 
 # 1 TODO: replace gaps in data by median
 # 2 TODO: replace strings in dataframe by vectors ex. 000100
@@ -35,7 +43,6 @@ def fetch_housing_data(housing_url=HOUSING_URL, housing_path=HOUSING_PATH):
 def load_housing_data(housing_path=HOUSING_PATH):
     csv_path = os.path.join(housing_path, "housing.csv")
     data = pd.read_csv(csv_path)
-    # imputer = Imputer(strategy="median") fill gaps in table
     return data
 
 
@@ -93,9 +100,18 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
         else:
             return np.c_[X, rooms_per_family, population_per_family]
 
+    def fit_transform(self, X, y=None, **fit_params):
+        rooms_per_family = X[:, self.roomsId] / X[:, self.householdId]
+        population_per_family = X[:, self.papulationId] / X[:, self.householdId]
+        if self.add_bedrooms_per_room:
+            bedrooms_per_room = X[:, self.bedroomsId] / X[:, self.roomsId]
+            return np.c_[X, rooms_per_family, population_per_family, bedrooms_per_room]
+        else:
+            return np.c_[X, rooms_per_family, population_per_family]
+
 
 num_pipeline = Pipeline([
-    ('imputer', Imputer(strategy="median")),
+    ('imputer', SimpleImputer(strategy="median")),
     ('attribs_adder', CombinedAttributesAdder()),
     ('std_scaler', StandardScaler())
 ])
@@ -103,7 +119,7 @@ num_pipeline = Pipeline([
 
 def encoded_data_without_gaps():
     data = load_train_data()
-    imputer = Imputer("median")
+    imputer = SimpleImputer("median")
     housing_num = data.drop("ocean_proximity", axis=1)  # usuwamy kolumne ze stringami
     # housing_num_tr = num_pipeline.fit_tranfrom(housing_num)
     imputer.fill(housing_num)
@@ -126,7 +142,7 @@ class DataFrameSelector(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         return self
 
-    def transfrom(self, X):
+    def transform(self, X):
         return X[self.attribute_names].values
 
 
@@ -139,14 +155,14 @@ def dataprepare(data):
 
     num_pipeline = Pipeline([
         ('selector', DataFrameSelector(num_attribs)),
-        ('imputer', Imputer(strategy="median")),
+        ('imputer', SimpleImputer(strategy="median")),
         ('attribs_adder', CombinedAttributesAdder()),
         ('std_scaler', StandardScaler()),
     ])
 
     cat_pipeline = Pipeline([
         ('selector', DataFrameSelector(cat_attribs)),
-        ('cat_encoder', CategoricalEncoder(encoding='onehot-dense')),
+        ('cat_encoder', OneHotEncoder()),
     ])
 
     full_pipeline = FeatureUnion(transformer_list=[
@@ -156,12 +172,75 @@ def dataprepare(data):
 
     return full_pipeline.fit_transform(data)
 
+def display_scores(scores):
+    print("Wyniki:", scores)
+    print("Średnia:", scores.mean())
+    print("Odchylenie standardowe:", scores.std())
 
-def trainRegresion(data):
+def trainRegresion():
     lin_reg = LinearRegression()
-    housing_prepared = dataprepare(load_train_data())
-    lin_reg.fit(housing_prepared, housing_labels)
+    data = load_train_data()
+    housing_prepared = dataprepare(data.copy())
+    housing_labels = data["median_house_value"].copy()  # attribute to predict
 
+    # wywolanie algorytmu regresji liniowej
+    # i zapisanie "wyuczonego" modelu do zmiennej lin_reg
+
+    #lin_reg.fit(housing_prepared, housing_labels)
+
+    # testy modelu
+
+    some_data = data.iloc[:5]
+    some_data_prepared = dataprepare(some_data)
+    some_labels = housing_labels.iloc[:5]
+    array = some_data_prepared.toarray().tolist()
+
+    # adding two last columns cuz in some_data where only 3 diffrenet strings
+    # of 5 possible
+
+    for record in array:
+        record.append(float(0))
+        record.append(float(0))
+    some_data_prepared = sparse.csr_matrix(array)
+
+    # print("Prognozy:", list(lin_reg.predict(some_data_prepared)))
+    # print("Etykiety:", list(some_labels))
+
+    # measuring RMSE error for this model
+
+    #housing_predictions = lin_reg.predict(some_data_prepared)
+    #lin_mse = mean_squared_error(some_labels, housing_predictions)
+    #lin_rmse = np.sqrt(lin_mse)
+    #print(lin_rmse) # blad
+
+    #drzewo decyzyjne
+    tree_reg = DecisionTreeRegressor()
+    #tree_reg.fit(housing_prepared, housing_labels)
+
+    #housing_predictionsT = tree_reg.predict(some_data_prepared)
+    #tree_mse = mean_squared_error(some_labels, housing_predictionsT)
+    #tree_rmse = np.sqrt(tree_mse)
+    #print(tree_rmse)
+
+    # podzial zbioru trenujacego na dane uczace i walidujace
+    scores = cross_val_score(tree_reg, housing_prepared, housing_labels,
+                             scoring="neg_mean_squared_error", cv=10)
+    tree_rmse_scores = np.sqrt(-scores)
+    display_scores(tree_rmse_scores)
+
+    lin_scores = cross_val_score(lin_reg, housing_prepared, housing_labels,
+                                 scoring="neg_mean_squared_error", cv=10)
+
+    lin_rmse_scores = np.sqrt(-lin_scores)
+    display_scores(lin_rmse_scores)
+
+    forest_reg = RandomForestRegressor()
+    forest_scores = cross_val_score(forest_reg, housing_prepared, housing_labels,
+                                         scoring="neg_mean_squared_error", cv=10, n_jobs=4)
+
+    forest_rmse_scores = np.sqrt(-forest_scores)
+
+    display_scores(forest_rmse_scores)
 
 def datawork(data):
     # s - dlugosc kolka, # c - co oznaczyc kolorami
@@ -172,19 +251,16 @@ def datawork(data):
     # )
     # wyliczanie macierzy korelacji, dla kazdej mozliwej pary
     # corr_matrix = data.corr()
-    # stopien korelacji kazdego atrybutu z mediana cen mieszkan
+    # stopien korelacji kazdego atrybutu z medianSimpleImputera cen mieszkan
     # print(corr_matrix["median_house_value"].sort_values(ascending=False))
     # plt.legend()
     # plt.show()
     # housing = load_train_data().drop("median_house_value", axis=1)
-    housing_labels = load_train_data()["median_house_value"].copy()
-    print(housing_labels)
-    print("ss")
-
+    pass
 
 if __name__ == '__main__':
     if len(sys.argv) == 1:
-        print("usage:", sys.argv[0], "[download/show/split/work]")
+        print("usage:", sys.argv[0], "[download/show/split/work/learn]")
     elif sys.argv[1] == "download":
         fetch_housing_data()
     elif sys.argv[1] == "show":
@@ -199,5 +275,7 @@ if __name__ == '__main__':
         split_train_test(load_housing_data(), TEST_RATIO)
     elif sys.argv[1] == "work":
         datawork(load_train_data())
+    elif sys.argv[1] == "learn":
+        trainRegresion()
     else:
-        print("usage:", sys.argv[0], "[download/show/split/work]")
+        print("usage:", sys.argv[0], "[download/show/split/work/learn]")
